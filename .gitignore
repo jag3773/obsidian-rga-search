@@ -1,0 +1,10 @@
+node_modules/
+main.js
+test-dist/
+*.map
+.DS_Store
+data.json
+
+# End-to-end tests: downloaded Obsidian builds, wdio logs
+.obsidian-cache/
+.wdio-logs/
