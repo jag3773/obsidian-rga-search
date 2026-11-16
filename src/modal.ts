@@ -70,9 +70,12 @@ export class SearchModal extends SuggestModal<Row> {
 		const out = await handle.done;
 		if (token !== this.seq || out.cancelled) return this.last;
 		this.current = null;
-		this.emptyStateText = out.error ?? (out.warning ? `No matches. ${out.warning}` : "No matches.");
-		// Files that can't be read fail on every search, so say so once per search box.
-		if (out.warning && out.hits.length && !this.warned.has(out.warning)) {
+		// Unreadable files fail on every search, so the empty list gives only their count, and
+		// the names come once per search box, in a notice.
+		const n = out.unreadable.length;
+		const skipped = n ? ` (${n === 1 ? "1 file" : `${n} files`} couldn't be read.)` : "";
+		this.emptyStateText = out.error ?? (out.warning && !n ? `No matches. ${out.warning}` : `No matches.${skipped}`);
+		if (out.warning && !this.warned.has(out.warning)) {
 			this.warned.add(out.warning);
 			new Notice(`RGA Search: ${out.warning}`, 8000);
 		}

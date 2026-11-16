@@ -35,7 +35,11 @@ Obsidian started from the Dock or Finder doesn't see your shell's `PATH`. RGA Se
 
 In the search box: **Enter** opens the document at the matching page, **Cmd/Ctrl+Enter** opens it in a new tab, and **Shift+Enter** opens the note that links to it.
 
-Lowercase queries ignore case; a query with a capital letter matches case exactly (ripgrep's "smart case"). Turn on **Regular expressions** in settings to use ripgrep's regex syntax.
+A phrase is found even where the PDF breaks it across lines or pages ("wasted an" at the end of one line, "interview" at the start of the next), and the result opens at the page where it starts. Straight quotes match the curly ones typeset PDFs use, so `it's` finds `it’s`. Lowercase queries ignore case; a query with a capital letter matches case exactly.
+
+Turn on **Regular expressions** in settings to use ripgrep's regex syntax instead. A regular expression is matched one line at a time.
+
+A word hyphenated at a line break is found too: search for `interview` and it matches "inter-" at the end of one line and "view" at the start of the next, whether the PDF uses a hyphen, a Unicode hyphen (‐) or an invisible soft hyphen. A hyphen you type (`well-known`) also matches one at a line break. En and em dashes at a line end are left alone, since they usually mark a range ("1990–1995") rather than a split word.
 
 ## Settings
 

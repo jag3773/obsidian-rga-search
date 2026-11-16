@@ -34,12 +34,78 @@ export interface SearchOptions {
  */
 export const CACHE_ARGS = ["--rga-cache-max-blob-len=100000000"];
 
+/**
+ * What may sit between two words of a phrase: whitespace, including line breaks, and the
+ * "Page N: " label rga puts at the start of every line of a PDF. A page break adds empty
+ * labelled lines ("of\nPage 2: \nPage 2: \nPage 3: grace"), so any run of both is allowed,
+ * starting with whitespace.
+ */
+const WORD_GAP = String.raw`\s(?:\s|Page \d+: )*`;
+
+/** The end of a line and the start of the next: whitespace and page labels, as in WORD_GAP. */
+const LINE_BREAK = String.raw`[ \t]*\r?\n(?:\s|Page \d+: )*`;
+
+/**
+ * What may sit between two letters of a word: nothing, or the remains of hyphenation.
+ * Typeset PDFs break "interview" as "inter-" / "view", with the hyphen a soft hyphen
+ * (U+00AD), a Unicode hyphen (U+2010) or "-"; a soft hyphen may also sit mid-line, where
+ * it is invisible. En and em dashes are left out: at a line end they are ranges or breaks
+ * in a sentence ("1990–" / "1995"), not a split word.
+ */
+const IN_WORD = String.raw`(?:\x{AD}(?:${LINE_BREAK})?|[\-\x{2010}]${LINE_BREAK})?`;
+
+/** A hyphen typed in the query ("well-known") also matches one at a line end ("well-" / "known"). */
+const QUERY_HYPHEN = String.raw`[\-\x{2010}\x{2011}\x{AD}](?:${LINE_BREAK})?`;
+
+const isWordChar = (c: string) => /[\p{L}\p{N}]/u.test(c);
+
+/** Escapes text for a ripgrep (Rust) regular expression. */
+function escapeRegex(s: string): string {
+	return s.replace(/[\\.+*?()|[\]{}^$#&\-~]/g, "\\$&");
+}
+
+/** Straight quotes in a query also match the curly ones typeset PDFs use. */
+const QUOTES: Record<string, string> = { "'": "['‘’]", "’": "['‘’]", "‘": "['‘’]", '"': `["“”]`, "“": `["“”]`, "”": `["“”]` };
+
+/**
+ * The regular expression for literal text: each word escaped, curly and straight quotes
+ * alike, hyphenation allowed between its letters, and the words joined by WORD_GAP, so a
+ * phrase still matches where the PDF breaks it across lines, pages or a hyphenated word.
+ */
+export function phrasePattern(query: string): string {
+	return query
+		.trim()
+		.split(/\s+/)
+		.map((word) => {
+			const cs = [...word];
+			return cs
+				.map((c, i) => {
+					if (c === "-") return QUERY_HYPHEN;
+					const part = QUOTES[c] ?? escapeRegex(c);
+					const next = cs[i + 1];
+					return next !== undefined && isWordChar(c) && isWordChar(next) ? part + IN_WORD : part;
+				})
+				.join("");
+		})
+		.join(WORD_GAP);
+}
+
 /** The arguments for a search, run with the vault folder as the working directory. */
 export function searchArgs(o: SearchOptions): string[] {
-	const args = [...CACHE_ARGS, "--json", "--smart-case", "--max-count", String(Math.max(1, Math.floor(o.maxPerFile)))];
-	if (!o.regex) args.push("--fixed-strings");
+	const args = [...CACHE_ARGS, "--json", "--max-count", String(Math.max(1, Math.floor(o.maxPerFile)))];
+	let pattern = o.query;
+	if (o.regex) {
+		args.push("--smart-case");
+	} else {
+		pattern = phrasePattern(o.query);
+		// Smart case would see the "P" of the page label in the pattern, so decide from the
+		// query itself: all lowercase ignores case, any capital matches case exactly.
+		args.push(o.query === o.query.toLowerCase() ? "--ignore-case" : "--case-sensitive");
+		// Even one word can span lines, when it is hyphenated at a line end.
+		args.push("--multiline");
+	}
 	for (const g of o.globs) if (g.trim()) args.push("--iglob", g.trim());
-	args.push("--regexp", o.query, "--");
+	args.push("--regexp", pattern, "--");
 	args.push(...searchRoots(o.folders));
 	return args;
 }
@@ -83,24 +149,28 @@ const decoder = new TextDecoder("utf-8");
 const PAGE_LABEL = /^Page (\d+): /;
 
 /**
- * Read one line of `rga --json` output. Returns a Hit for "match" lines and null for
+ * Read one line of `rga --json` output: the hits in a "match" message, or none for
  * everything else (begin, end, context, summary, blank or malformed lines).
+ *
+ * With --multiline, ripgrep reports matches on consecutive lines as one block. The block is
+ * split again so each match is its own hit, on its own page; matches stay together only
+ * when one of them runs from one line onto the next.
  */
-export function parseLine(line: string): Hit | null {
-	if (!line.trim()) return null;
+export function parseLine(line: string): Hit[] {
+	if (!line.trim()) return [];
 	let msg: unknown;
 	try {
 		msg = JSON.parse(line);
 	} catch {
-		return null;
+		return [];
 	}
-	if (!msg || typeof msg !== "object") return null;
+	if (!msg || typeof msg !== "object") return [];
 	const m = msg as { type?: string; data?: { path?: RgData; lines?: RgData; submatches?: Array<{ start: number; end: number }> } };
-	if (m.type !== "match" || !m.data) return null;
+	if (m.type !== "match" || !m.data) return [];
 
 	const pathBytes = dataBytes(m.data.path);
 	const lineBytes = dataBytes(m.data.lines);
-	if (!pathBytes || !lineBytes) return null;
+	if (!pathBytes || !lineBytes) return [];
 
 	// Submatch offsets count UTF-8 bytes in the line; convert each to a string offset.
 	const ranges: Array<[number, number]> = [];
@@ -111,21 +181,75 @@ export function parseLine(line: string): Hit | null {
 		ranges.push([start, end]);
 	}
 
-	let text = decoder.decode(lineBytes).replace(/\r?\n$/, "");
-	let page: number | null = null;
-	const label = PAGE_LABEL.exec(text);
-	if (label) {
-		page = Number(label[1]);
-		const cut = label[0].length;
-		text = text.slice(cut);
-		for (const r of ranges) {
-			r[0] = Math.max(0, r[0] - cut);
-			r[1] = Math.max(0, r[1] - cut);
+	const path = vaultPath(decoder.decode(pathBytes));
+	const raw = decoder.decode(lineBytes);
+	return splitBlock(raw, ranges).map((part) => ({ path, ...joinLines(part.raw, part.ranges) }));
+}
+
+/**
+ * Splits a block of lines into the stretches its matches cover: one per match, or one for
+ * matches whose lines overlap. Each stretch runs from the start of its first match's line
+ * to the end of its last match's line. Ranges are moved to suit.
+ */
+export function splitBlock(raw: string, ranges: Array<[number, number]>): Array<{ raw: string; ranges: Array<[number, number]> }> {
+	if (!ranges.length) return [{ raw, ranges }];
+	const lineStart = (o: number) => raw.lastIndexOf("\n", o - 1) + 1;
+	const lineEnd = (o: number) => {
+		const nl = raw.indexOf("\n", o);
+		return nl === -1 ? raw.length : nl;
+	};
+	const groups: Array<{ from: number; to: number; ranges: Array<[number, number]> }> = [];
+	for (const r of [...ranges].sort((a, b) => a[0] - b[0])) {
+		// The match's last character decides its last line, so a match ending at "\n" stays on its line.
+		const from = lineStart(r[0]);
+		const to = lineEnd(Math.max(r[0], r[1] - 1));
+		const last = groups[groups.length - 1];
+		if (last && from <= last.to) {
+			last.to = Math.max(last.to, to);
+			last.ranges.push(r);
+		} else {
+			groups.push({ from, to, ranges: [r] });
 		}
 	}
-	const clipped = ranges.filter(([a, b]) => b > a).map(([a, b]): [number, number] => [a, Math.min(b, text.length)]);
+	return groups.map((g) => ({ raw: raw.slice(g.from, g.to), ranges: g.ranges.map(([a, b]): [number, number] => [a - g.from, b - g.from]) }));
+}
 
-	return { path: vaultPath(decoder.decode(pathBytes)), page, text, ranges: clipped };
+/** A line ending in one of these was hyphenated: it joins the next line without a space. */
+const HYPHENATED = /[-\u2010\u00AD]$/;
+
+/**
+ * A match's text as one line: each line's "Page N: " label removed and the lines joined
+ * with spaces (a multiline match spans several), with the ranges moved to suit. The page
+ * is the one where the first match starts.
+ */
+export function joinLines(raw: string, ranges: Array<[number, number]>): { text: string; page: number | null; ranges: Array<[number, number]> } {
+	const lines = raw.replace(/\r?\n$/, "").split("\n");
+	// Each line's start in `raw`, its label length and page, and its start in the joined text.
+	const segs: Array<{ from: number; to: number; cut: number; page: number | null; at: number }> = [];
+	let from = 0;
+	let at = 0;
+	let text = "";
+	lines.forEach((line, i) => {
+		const body = line.replace(/\r$/, "");
+		const label = PAGE_LABEL.exec(body);
+		const cut = label ? label[0].length : 0;
+		const part = body.slice(cut);
+		// Lines are joined with a space, except after a hyphenated line ("inter-" + "view").
+		const sep = i === lines.length - 1 ? "" : HYPHENATED.test(part) ? "" : " ";
+		segs.push({ from, to: from + line.length, cut, page: label ? Number(label[1]) : null, at });
+		text += part + sep;
+		at += part.length + sep.length;
+		from += line.length + 1;
+	});
+	const segOf = (o: number) => segs.find((s) => o <= s.to) ?? segs[segs.length - 1];
+	const map = (o: number) => {
+		const s = segOf(o);
+		return Math.min(text.length, s.at + Math.max(0, Math.min(o, s.to) - s.from - s.cut));
+	};
+	const moved = ranges.map(([a, b]): [number, number] => [map(a), map(b)]).filter(([a, b]) => b > a);
+	const first = ranges.length ? segOf(ranges[0][0]) : segs[0];
+	const page = first?.page ?? segs.find((s) => s.page !== null)?.page ?? null;
+	return { text, page, ranges: moved };
 }
 
 /** "./a/b.pdf" or "a\\b.pdf" -> "a/b.pdf". */
@@ -234,5 +358,5 @@ export function unreadableWarning(files: string[]): string | null {
 	if (!files.length) return null;
 	const names = files.slice(0, 3).map((f) => f.split("/").pop() ?? f);
 	const more = files.length > 3 ? ` and ${files.length - 3} more` : "";
-	return `${files.length === 1 ? "1 file" : `${files.length} files`} couldn't be read (damaged, or not really that type): ${names.join(", ")}${more}.`;
+	return `${files.length === 1 ? "1 file" : `${files.length} files`} couldn't be read (damaged, password-protected, or not really that type): ${names.join(", ")}${more}.`;
 }

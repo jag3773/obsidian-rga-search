@@ -122,7 +122,7 @@ export class RgaSearchSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Regular expressions")
-			.setDesc("Off: the query is plain text. On: it is a ripgrep regular expression. Lowercase queries ignore case either way.")
+			.setDesc("Off: the query is plain text, and a phrase is found even where it breaks across lines. On: it is a ripgrep regular expression, matched one line at a time. Lowercase queries ignore case either way.")
 			.addToggle((t) =>
 				t.setValue(s.regex).onChange((v) => {
 					s.regex = v;

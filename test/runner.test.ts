@@ -177,13 +177,55 @@ describe("Runner with the real rga", { skip: !real && "rga is not installed" }, 
 		vault = fs.mkdtempSync(path.join(os.tmpdir(), "rga-search-vault-"));
 		fs.mkdirSync(path.join(vault, "archive", "zotero"), { recursive: true });
 		fs.copyFileSync(path.join("test", "fixtures", "Covenant Paper.pdf"), path.join(vault, "archive", "zotero", "Covenant Paper.pdf"));
+		fs.copyFileSync(path.join("test", "fixtures", "Line Breaks.pdf"), path.join(vault, "archive", "Line Breaks.pdf"));
 		fs.writeFileSync(path.join(vault, "note.md"), "covenant in a note, which is left to Obsidian's search\n");
 	});
 	after(() => fs.rmSync(vault, { recursive: true, force: true }));
 
+	const find = async (query: string) => {
+		const runner = new Runner(modules(process.env.PATH ?? ""), { rgaPath: "", cwd: vault });
+		const out = await runner.run(searchArgs({ query, regex: false, folders: ["archive"], globs: ["*.pdf"], maxPerFile: 5 })).done;
+		assert.equal(out.error, null);
+		return out.hits.map((h) => ({ path: h.path, page: h.page, match: h.ranges.map(([a, b]) => h.text.slice(a, b)) }));
+	};
+
+	it("finds a phrase that breaks across lines", async () => {
+		assert.deepEqual(await find("wasted an interview"), [{ path: "archive/Line Breaks.pdf", page: 2, match: ["wasted an interview"] }]);
+	});
+
+	it("finds a phrase that breaks across pages, on the page where it starts", async () => {
+		assert.deepEqual(await find("the covenant of grace"), [{ path: "archive/Line Breaks.pdf", page: 2, match: ["the covenant of   grace"] }]);
+	});
+
+	it("matches a straight apostrophe to the curly one pdftotext gives", async () => {
+		assert.deepEqual(await find("it's a lesson"), [{ path: "archive/Line Breaks.pdf", page: 2, match: ["It’s a lesson"] }]);
+	});
+
+	it("gives each match on consecutive lines its own hit, though rga reports them as one block", async () => {
+		const hits = (await find("covenant")).filter((h) => h.path === "archive/Line Breaks.pdf");
+		assert.deepEqual(
+			hits.map((h) => [h.page, h.match]),
+			[
+				[2, ["covenant"]],
+				[4, ["Covenant"]],
+				[4, ["covenant"]],
+				[4, ["covenant"]],
+			],
+		);
+	});
+
+	it("finds a word pdftotext rejoined after hyphenation", async () => {
+		assert.deepEqual(await find("second interview"), [{ path: "archive/Line Breaks.pdf", page: 4, match: ["second interview"] }]);
+	});
+
+	it("matches case exactly when the query has a capital", async () => {
+		assert.deepEqual(await find("It's a lesson"), [{ path: "archive/Line Breaks.pdf", page: 2, match: ["It’s a lesson"] }]);
+		assert.deepEqual(await find("WASTED an interview"), []);
+	});
+
 	it("finds text in a PDF with its page numbers", async () => {
 		const runner = new Runner(modules(process.env.PATH ?? ""), { rgaPath: "", cwd: vault });
-		const out = await runner.run(searchArgs({ query: "Covenant", regex: false, folders: [], globs: ["*.pdf"], maxPerFile: 5 })).done;
+		const out = await runner.run(searchArgs({ query: "Covenant", regex: false, folders: ["archive/zotero"], globs: ["*.pdf"], maxPerFile: 5 })).done;
 		assert.equal(out.error, null);
 		// "Covenant" has a capital, so smart case makes it case-sensitive: no match.
 		assert.equal(out.hits.length, 0);
