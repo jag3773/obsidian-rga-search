@@ -47,9 +47,79 @@ describe("Runner with a stand-in rga", { skip: windows && "uses a shell script" 
 
 	it("treats exit 1 as no matches and reports real errors from stderr", async () => {
 		fake("exit 1");
-		assert.deepEqual(await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done, { hits: [], truncated: false, cancelled: false, error: null });
+		assert.deepEqual(await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done, { hits: [], truncated: false, cancelled: false, error: null, warning: null, unreadable: [] });
 		fake("echo 'rga: bad regex' >&2; exit 2");
 		assert.equal((await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done).error, "rga: bad regex");
+	});
+
+	// rga's report for a file it can't extract, as printed for a damaged PDF in a real library.
+	const report = (file: string) =>
+		[
+			`rg: ${file}: preprocessor command failed: '"/opt/homebrew/bin/rga-preproc" "${file}"': `,
+			"-".repeat(79),
+			`/vault/${file} adapter: poppler`,
+			"Syntax Error: Couldn't read xref table",
+			"Error: copying adapter output to stdout",
+			"-".repeat(79),
+		].join("\n");
+
+	it("reports unreadable files as a warning alongside matches", async () => {
+		fs.writeFileSync(path.join(dir, "stderr.txt"), `${report("archive/broken.pdf")}\n${report("archive/bad.epub")}\n`);
+		fake(`printf '%s\\n' '${match("a.pdf", 1)}'; cat stderr.txt >&2; exit 2`);
+		const out = await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done;
+		assert.equal(out.error, null);
+		assert.equal(out.hits.length, 1);
+		assert.deepEqual(out.unreadable, ["archive/broken.pdf", "archive/bad.epub"]);
+		assert.match(out.warning!, /^2 files couldn't be read.*broken\.pdf, bad\.epub\.$/);
+	});
+
+	it("says no matches, not an error, when only unreadable files failed", async () => {
+		fs.writeFileSync(path.join(dir, "stderr.txt"), `${report("archive/broken.pdf")}\n`);
+		fake("cat stderr.txt >&2; exit 2");
+		const out = await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done;
+		assert.equal(out.error, null);
+		assert.deepEqual(out.hits, []);
+		assert.match(out.warning!, /^1 file couldn't be read/);
+	});
+
+	it("keeps a whole-search error over several lines, apart from unreadable-file reports", async () => {
+		fs.writeFileSync(path.join(dir, "stderr.txt"), `${report("archive/broken.pdf")}\nrg: regex parse error:\n    (?:(unclosed)\nerror: unclosed group\n`);
+		fake("cat stderr.txt >&2; exit 2");
+		const out = await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done;
+		assert.equal(out.error, "rg: regex parse error:\n    (?:(unclosed)\nerror: unclosed group");
+	});
+
+	it("reports a problem alongside matches when it isn't about one file", async () => {
+		fake(`printf '%s\\n' '${match("a.pdf", 1)}'; echo 'rg: something went wrong' >&2; exit 2`);
+		const out = await new Runner(modules(dir), { rgaPath: "", cwd: dir }).run([]).done;
+		assert.equal(out.error, null);
+		assert.equal(out.warning, "rg: something went wrong");
+	});
+
+	it("on Windows, ends the whole process tree with taskkill", async () => {
+		// A Windows-style PATH (";"-separated) hides /bin from the script, so sleep is named in full.
+		fake(`printf '%s\\n' '${match("a.pdf", 1)}'; /bin/sleep 5`);
+		const calls: string[][] = [];
+		const node = modules(dir);
+		const fakeCp = {
+			...cp,
+			spawn: cp.spawn,
+			execFile: ((file: string, args: string[], _opts: unknown, cb: () => void) => {
+				calls.push([file, ...args]);
+				cb();
+			}) as unknown as typeof cp.execFile,
+		};
+		const win = { ...node, cp: fakeCp as typeof cp, process: { ...node.process, platform: "win32", env: node.process.env } as unknown as typeof process };
+		// PATH lookup would want rga.exe, so give the script's path directly.
+		const handle = new Runner(win, { rgaPath: path.join(dir, "rga"), cwd: dir }).run([]);
+		await new Promise((r) => setTimeout(r, 200));
+		handle.cancel();
+		const out = await handle.done;
+		assert.equal(out.cancelled, true, "still running when cancelled");
+		assert.equal(calls.length, 1);
+		assert.deepEqual([calls[0][0], calls[0][1], calls[0][3], calls[0][4]], ["taskkill", "/pid", "/T", "/F"]);
+		assert.match(calls[0][2], /^\d+$/);
+		process.kill(Number(calls[0][2]), "SIGTERM");
 	});
 
 	it("stops at the result limit", async () => {

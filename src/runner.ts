@@ -2,7 +2,7 @@
  * Runs rga as a child process. The only module that touches Node: the plugin is
  * desktop-only, and tests pass Node's own modules in.
  */
-import { Hit, LineSplitter, parseLine, rgaExecutable, searchPath } from "./rga";
+import { Hit, LineSplitter, parseLine, rgaExecutable, searchPath, unreadableFile, unreadableWarning } from "./rga";
 
 export interface NodeModules {
 	cp: typeof import("child_process");
@@ -35,8 +35,15 @@ export interface RunOutcome {
 	/** True when the search stopped at the result limit. */
 	truncated: boolean;
 	cancelled: boolean;
-	/** Set when rga could not start or exited with an error (exit 1 means "no matches" and is not one). */
+	/**
+	 * Set when the search failed as a whole: rga could not start, or exited with an error
+	 * that isn't about particular files (exit 1 means "no matches" and is not one).
+	 */
 	error: string | null;
+	/** Set when the search ran but some files couldn't be read, or rga reported a problem alongside its matches. */
+	warning: string | null;
+	/** Files rga couldn't extract text from. */
+	unreadable: string[];
 }
 
 export interface RunHandle {
@@ -95,6 +102,8 @@ export class Runner {
 		let cancelled = false;
 		let truncated = false;
 		const hits: Hit[] = [];
+		const unreadable: string[] = [];
+		let warning: string | null = null;
 		let settle: ((error: string | null) => void) | null = null;
 
 		const done = new Promise<RunOutcome>((resolve) => {
@@ -102,7 +111,7 @@ export class Runner {
 			settle = (error) => {
 				if (settled) return;
 				settled = true;
-				resolve({ hits, truncated, cancelled, error: cancelled || truncated ? null : error });
+				resolve({ hits, truncated, cancelled, error: cancelled || truncated ? null : error, warning, unreadable });
 			};
 			const finish = settle;
 			let exe: string;
@@ -113,20 +122,33 @@ export class Runner {
 				return;
 			}
 			const env = { ...this.env, PATH: this.pathVar(this.node.path.dirname(exe)) };
-			// On macOS and Linux rga gets its own process group, so stopping it also stops the
-			// rg and rga-preproc processes it starts; otherwise they would run on after each keystroke.
-			const group = this.platform !== "win32";
-			const proc = this.node.cp.spawn(exe, args, { cwd: this.opts.cwd, env, windowsHide: true, detached: group });
-			stop = () => {
-				try {
-					if (group && proc.pid) this.node.process.kill(-proc.pid, "SIGTERM");
-					else proc.kill();
-				} catch {
-					proc.kill();
-				}
-			};
+			// Stopping rga must also stop the rg, rga-preproc and extractor processes it starts;
+			// otherwise they would run on after each keystroke. On macOS and Linux rga gets its own
+			// process group, and the group is signalled; on Windows taskkill ends the process tree.
+			const windows = this.platform === "win32";
+			const proc = this.node.cp.spawn(exe, args, { cwd: this.opts.cwd, env, windowsHide: true, detached: !windows });
+			stop = () => this.killTree(proc);
 			const lines = new LineSplitter();
+			const errLines = new LineSplitter();
 			let stderr = "";
+			// Each unreadable file gets a report: an "rg: <path>: preprocessor command failed" line,
+			// then the adapter's output between two rules of dashes. Those are collected as files;
+			// anything else (a bad regex, an unknown flag) is kept as the error text.
+			let rules = -1;
+			const takeErr = (line: string) => {
+				const file = unreadableFile(line);
+				if (file) {
+					unreadable.push(file);
+					rules = 0;
+					return;
+				}
+				if (rules >= 0) {
+					if (/^-{20,}\s*$/.test(line)) rules++;
+					if (rules >= 2) rules = -1;
+					return;
+				}
+				if (stderr.length < 8000) stderr += `${line}\n`;
+			};
 			const take = (line: string) => {
 				if (truncated || cancelled) return;
 				const hit = parseLine(line);
@@ -141,15 +163,23 @@ export class Runner {
 			proc.stdout?.setEncoding("utf8");
 			proc.stdout?.on("data", (chunk: string) => lines.push(chunk).forEach(take));
 			proc.stderr?.setEncoding("utf8");
-			proc.stderr?.on("data", (chunk: string) => {
-				if (stderr.length < 8000) stderr += chunk;
-			});
+			// rga prints a multi-line report per unreadable file; only the "rg: path: ..." lines matter.
+			proc.stderr?.on("data", (chunk: string) => errLines.push(chunk).forEach(takeErr));
 			proc.on("error", (e: NodeJS.ErrnoException) => finish(e.code === "ENOENT" ? `Could not start rga at ${exe}.` : e.message));
 			proc.on("close", (code) => {
 				lines.flush().forEach(take);
-				// ripgrep: 0 = matches, 1 = no matches, 2 = error (possibly with matches too).
-				if (code === 0 || code === 1 || code === null) finish(null);
-				else finish(hits.length ? null : firstLines(stderr) || `rga exited with code ${code}.`);
+				errLines.flush().forEach(takeErr);
+				// ripgrep: 0 = matches, 1 = no matches, 2 = an error somewhere (with or without matches).
+				warning = unreadableWarning(unreadable);
+				if (code === 0 || code === 1 || code === null) return finish(null);
+				const problem = firstLines(stderr);
+				// Unreadable files alone don't fail a search: the rest of the library was searched.
+				if (!problem && unreadable.length) return finish(null);
+				if (hits.length) {
+					warning = [warning, problem].filter(Boolean).join(" ") || `rga exited with code ${code}.`;
+					return finish(null);
+				}
+				finish(problem || `rga exited with code ${code}.`);
 			});
 		});
 
@@ -162,6 +192,22 @@ export class Runner {
 				settle?.(null);
 			},
 		};
+	}
+
+	/** Stops rga and every process it started. */
+	private killTree(proc: import("child_process").ChildProcess): void {
+		try {
+			if (this.platform === "win32") {
+				if (proc.pid) this.node.cp.execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true }, () => undefined);
+				else proc.kill();
+			} else if (proc.pid) {
+				this.node.process.kill(-proc.pid, "SIGTERM");
+			} else {
+				proc.kill();
+			}
+		} catch {
+			proc.kill();
+		}
 	}
 
 	/** `rga --version`, or an error message. */

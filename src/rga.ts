@@ -21,17 +21,24 @@ export interface SearchOptions {
 	regex: boolean;
 	/** Vault-relative folders to search; empty searches the whole vault. */
 	folders: string[];
-	/** Glob filters passed to ripgrep (-g), e.g. "*.pdf". Empty searches every file. */
+	/** Glob filters, matched ignoring case ("*.pdf" also finds "A.PDF"). Empty searches every file. */
 	globs: string[];
 	/** Most matching lines to report per file. */
 	maxPerFile: number;
 }
 
+/**
+ * rga caches a document's text only when it compresses to 2 MB or less, so a large book
+ * (a 200 MB textbook, a study Bible) was extracted again on every search, taking a minute
+ * each time. 100 MB covers any real document; the cache stores it compressed.
+ */
+export const CACHE_ARGS = ["--rga-cache-max-blob-len=100000000"];
+
 /** The arguments for a search, run with the vault folder as the working directory. */
 export function searchArgs(o: SearchOptions): string[] {
-	const args = ["--json", "--smart-case", "--max-count", String(Math.max(1, Math.floor(o.maxPerFile)))];
+	const args = [...CACHE_ARGS, "--json", "--smart-case", "--max-count", String(Math.max(1, Math.floor(o.maxPerFile)))];
 	if (!o.regex) args.push("--fixed-strings");
-	for (const g of o.globs) if (g.trim()) args.push("--glob", g.trim());
+	for (const g of o.globs) if (g.trim()) args.push("--iglob", g.trim());
 	args.push("--regexp", o.query, "--");
 	args.push(...searchRoots(o.folders));
 	return args;
@@ -42,8 +49,8 @@ export function searchArgs(o: SearchOptions): string[] {
  * a search for a pattern no file contains still runs every file through its adapter.
  */
 export function warmArgs(folders: string[], globs: string[]): string[] {
-	const args = ["--files-with-matches", "--fixed-strings"];
-	for (const g of globs) if (g.trim()) args.push("--glob", g.trim());
+	const args = [...CACHE_ARGS, "--files-with-matches", "--fixed-strings"];
+	for (const g of globs) if (g.trim()) args.push("--iglob", g.trim());
 	args.push("--regexp", "rga-search-warm-cache-q7v3x9-no-match", "--");
 	args.push(...searchRoots(folders));
 	return args;
@@ -212,4 +219,20 @@ export function groupByDocument<T extends Pick<Hit, "path">>(hits: T[]): T[] {
 		else groups.set(h.path, [h]);
 	}
 	return [...groups.values()].flat();
+}
+
+const UNREADABLE = /^rg: (.+?): preprocessor command failed/;
+
+/** The file in an rga stderr line saying it couldn't extract that file, else null. */
+export function unreadableFile(line: string): string | null {
+	const m = UNREADABLE.exec(line);
+	return m ? vaultPath(m[1]) : null;
+}
+
+/** A one-line warning naming files that couldn't be read. */
+export function unreadableWarning(files: string[]): string | null {
+	if (!files.length) return null;
+	const names = files.slice(0, 3).map((f) => f.split("/").pop() ?? f);
+	const more = files.length > 3 ? ` and ${files.length - 3} more` : "";
+	return `${files.length === 1 ? "1 file" : `${files.length} files`} couldn't be read (damaged, or not really that type): ${names.join(", ")}${more}.`;
 }

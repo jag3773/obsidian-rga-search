@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { App } from "obsidian";
-import { linkTargets, ReferenceIndex, referenceProps } from "../src/references";
+import { linkTargets, markdownLinkDestinations, ReferenceIndex, referenceProps } from "../src/references";
 
 describe("linkTargets", () => {
 	it("reads wikilinks, with subpaths and aliases dropped", () => {
@@ -12,6 +12,14 @@ describe("linkTargets", () => {
 	it("reads Markdown links, decoding spaces", () => {
 		assert.deepEqual(linkTargets("[Smith](Attachments/Smith%202020.pdf)"), ["Attachments/Smith 2020.pdf"]);
 		assert.deepEqual(linkTargets("[Smith](<Attachments/Smith 2020.pdf>)"), ["Attachments/Smith 2020.pdf"]);
+	});
+
+	it("reads Markdown links with parentheses, titles and angle brackets", () => {
+		assert.deepEqual(linkTargets("[A](Attachments/Smith%20(2020).pdf)"), ["Attachments/Smith (2020).pdf"]);
+		assert.deepEqual(linkTargets('[A](Attachments/smith2020.pdf "Smith 2020")'), ["Attachments/smith2020.pdf"]);
+		assert.deepEqual(linkTargets("[A](<Attachments/Smith (2020).pdf> 'Title')"), ["Attachments/Smith (2020).pdf"]);
+		assert.deepEqual(linkTargets("[A](a\\).pdf)"), ["a).pdf"]);
+		assert.deepEqual(markdownLinkDestinations("[a](x.pdf) and [b](y%20(1).pdf#page=2)"), ["x.pdf", "y%20(1).pdf#page=2"]);
 	});
 
 	it("reads bare paths and lists, skips URLs and non-strings", () => {
@@ -38,7 +46,7 @@ function fakeApp(notes: Record<string, Record<string, unknown>>, documents: stri
 }
 
 describe("ReferenceIndex", () => {
-	const own = { links: ["pdf", "attachments"], title: "title", citekey: "citekey" };
+	const own = { links: ["pdf", "attachments"], titles: ["title"], citekeys: ["citekey"] };
 
 	it("maps a document to the note that links it, with title and citekey", () => {
 		const app = fakeApp(
@@ -59,9 +67,23 @@ describe("ReferenceIndex", () => {
 	it("uses Stacks' property names when Stacks is installed", () => {
 		const app = fakeApp({ "R/a.md": { Fulltext: "[[a.pdf]]", Name: "A Title", Key: "a2020" } }, ["a.pdf"], { pdf: "Fulltext", attachments: "Files", title: "Name", citekey: "Key" });
 		const props = referenceProps(app, own, true);
-		assert.deepEqual(props, { links: ["Fulltext", "Files"], title: "Name", citekey: "Key" });
+		assert.deepEqual(props, { links: ["Fulltext", "Files", "pdf", "attachments"], titles: ["Name", "title"], citekeys: ["Key", "citekey"] });
 		assert.deepEqual(new ReferenceIndex(app, props).build().get("a.pdf"), { path: "R/a.md", title: "A Title", citekey: "a2020" });
 		assert.deepEqual(referenceProps(app, own, false), own);
+	});
+
+	it("keeps notes written before a Stacks property rename", () => {
+		const app = fakeApp(
+			{
+				"R/new.md": { Fulltext: "[[new.pdf]]", Name: "New", Key: "new2024" },
+				"R/old.md": { pdf: "[[old.pdf]]", title: "Old", citekey: "old1999" },
+			},
+			["new.pdf", "old.pdf"],
+			{ pdf: "Fulltext", attachments: "Files", title: "Name", citekey: "Key" },
+		);
+		const idx = new ReferenceIndex(app, referenceProps(app, own, true)).build();
+		assert.deepEqual(idx.get("old.pdf"), { path: "R/old.md", title: "Old", citekey: "old1999" });
+		assert.deepEqual(idx.get("new.pdf"), { path: "R/new.md", title: "New", citekey: "new2024" });
 	});
 
 	it("falls back to its own names without Stacks", () => {

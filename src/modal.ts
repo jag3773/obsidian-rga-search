@@ -1,4 +1,4 @@
-import { App, Keymap, Platform, SuggestModal } from "obsidian";
+import { App, Keymap, Notice, Platform, SuggestModal } from "obsidian";
 import { documentLink, excerpt, groupByDocument, Hit, searchArgs } from "./rga";
 import type { ReferenceIndex } from "./references";
 import type { RunHandle, Runner } from "./runner";
@@ -13,6 +13,7 @@ export class SearchModal extends SuggestModal<Row> {
 	private seq = 0;
 	private current: RunHandle | null = null;
 	private last: Row[] = [];
+	private warned = new Set<string>();
 
 	constructor(
 		app: App,
@@ -69,7 +70,12 @@ export class SearchModal extends SuggestModal<Row> {
 		const out = await handle.done;
 		if (token !== this.seq || out.cancelled) return this.last;
 		this.current = null;
-		this.emptyStateText = out.error ?? "No matches.";
+		this.emptyStateText = out.error ?? (out.warning ? `No matches. ${out.warning}` : "No matches.");
+		// Files that can't be read fail on every search, so say so once per search box.
+		if (out.warning && out.hits.length && !this.warned.has(out.warning)) {
+			this.warned.add(out.warning);
+			new Notice(`RGA Search: ${out.warning}`, 8000);
+		}
 		const rows = groupByDocument(out.hits).map((h) => ({ ...h, ref: this.refs.get(h.path) }));
 		return (this.last = rows);
 	}

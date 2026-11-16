@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cleanFolder, documentLink, excerpt, groupByDocument, LineSplitter, parseLine, searchArgs, searchPath, splitList, vaultPath, warmArgs } from "../src/rga";
+import { cleanFolder, documentLink, excerpt, groupByDocument, LineSplitter, parseLine, searchArgs, searchPath, splitList, unreadableFile, unreadableWarning, vaultPath, warmArgs } from "../src/rga";
 
 /** A match line as rga --json prints it, with byte offsets computed from the text. */
 function matchLine(path: string, line: string, needle: string): string {
@@ -64,14 +64,15 @@ describe("parseLine", () => {
 describe("searchArgs", () => {
 	it("searches literally, smart-case, with globs, in the given folders", () => {
 		assert.deepEqual(searchArgs({ query: "-covenant", regex: false, folders: ["/archive/zotero/", ""], globs: ["*.pdf", " *.epub "], maxPerFile: 5 }), [
+			"--rga-cache-max-blob-len=100000000",
 			"--json",
 			"--smart-case",
 			"--max-count",
 			"5",
 			"--fixed-strings",
-			"--glob",
+			"--iglob",
 			"*.pdf",
-			"--glob",
+			"--iglob",
 			"*.epub",
 			"--regexp",
 			"-covenant",
@@ -85,6 +86,11 @@ describe("searchArgs", () => {
 		assert.ok(!args.includes("--fixed-strings"));
 		assert.deepEqual(args.slice(-2), ["--", "."]);
 		assert.equal(args[args.indexOf("--max-count") + 1], "1");
+	});
+
+	it("matches file types ignoring case, so *.pdf finds A.PDF", () => {
+		assert.ok(warmArgs([], ["*.pdf"]).includes("--iglob"));
+		assert.ok(!searchArgs({ query: "x", regex: false, folders: [], globs: ["*.pdf"], maxPerFile: 1 }).includes("--glob"));
 	});
 
 	it("warms without printing matches", () => {
@@ -152,5 +158,18 @@ describe("LineSplitter", () => {
 		assert.deepEqual(s.push(":2}\n"), ['{"b":2}']);
 		assert.deepEqual(s.push("tail"), []);
 		assert.deepEqual(s.flush(), ["tail"]);
+	});
+});
+
+describe("unreadable files", () => {
+	it("finds the file in rga's report line", () => {
+		assert.equal(unreadableFile(`rg: ./archive/zotero/Florida 2023.pdf: preprocessor command failed: '"/opt/homebrew/bin/rga-preproc" "x"': `), "archive/zotero/Florida 2023.pdf");
+		assert.equal(unreadableFile("rg: regex parse error:"), null);
+	});
+
+	it("names up to three files", () => {
+		assert.equal(unreadableWarning([]), null);
+		assert.equal(unreadableWarning(["a/x.pdf"]), "1 file couldn't be read (damaged, or not really that type): x.pdf.");
+		assert.match(unreadableWarning(["a", "b", "c", "d", "e"])!, /^5 files .*: a, b, c and 2 more\.$/);
 	});
 });

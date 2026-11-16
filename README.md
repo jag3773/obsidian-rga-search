@@ -10,7 +10,8 @@ RGA Search is **desktop only**. It runs `rga`, a separate program you install yo
 
 - **Search runs `rga --json`** over the folders you choose. `rga` extracts the text of each document (with `pdftotext` for PDFs, `pandoc` for EPUB and Office files), then ripgrep searches it. Each keystroke cancels the previous search.
 - **Results show pages.** `rga` labels each line of a PDF with its page number, so a result opens `file.pdf#page=N` in Obsidian's PDF viewer.
-- **The cache lives outside your vault.** `rga` keeps extracted text in its own cache folder (`~/Library/Caches/ripgrep-all` on macOS, `~/.cache/ripgrep-all` on Linux, `%LOCALAPPDATA%\ripgrep-all` on Windows). Nothing is added to your vault and nothing syncs. The first search over a large library extracts every document and can take a while; later searches read the cache. Run **Warm the cache** to do that first pass ahead of time, or turn on **Warm the cache at startup**.
+- **The cache lives outside your vault.** `rga` keeps extracted text in its own cache folder (`~/Library/Caches/ripgrep-all` on macOS, `~/.cache/ripgrep-all` on Linux, `%LOCALAPPDATA%\ripgrep-all` on Windows). Nothing is added to your vault and nothing syncs. The first search over a large library extracts every document and can take a while (over an hour for about 950 PDFs on a recent Mac); later searches read the cache. Run **Warm the cache** to do that first pass ahead of time, or turn on **Warm the cache at startup**. RGA Search raises `rga`'s cache size limit so very large books are cached too; by default `rga` re-extracts any document whose text compresses to more than 2 MB on every search.
+- **Damaged files don't stop a search.** A file `rga` can't read (a damaged PDF, an EPUB pandoc rejects) is skipped, and the search box names it.
 - **Notes are left to Obsidian.** By default only `*.pdf` and `*.epub` files are searched, because Obsidian's own search already covers Markdown.
 
 ## Install
@@ -39,9 +40,9 @@ Lowercase queries ignore case; a query with a capital letter matches case exactl
 ## Settings
 
 - **Folders**: where to search, for example `archive/zotero`. Empty searches the whole vault.
-- **File types**: glob patterns. Add `*.docx`, `*.odt` or `*.zip` to search those too.
+- **File types**: glob patterns, matched ignoring case (`*.pdf` also finds `Scan.PDF`). Add `*.docx`, `*.odt` or `*.zip` to search those too.
 - **Maximum results** and **Matches per file**: keep the list short on common words.
-- **Reference notes**: the properties that link a note to its document (`pdf` and `attachments` by default), and the title and citekey properties to show. With **Use Stacks' properties** on, RGA Search reads Stacks' own field mapping, so renamed properties still work.
+- **Reference notes**: the properties that link a note to its document (`pdf` and `attachments` by default), and the title and citekey properties to show. With **Use Stacks' properties** on, RGA Search reads Stacks' own field mapping first, so renamed properties still work, and falls back to these names for notes written before a rename. Links can be wikilinks or Markdown links (`[Smith](Smith%20(2020).pdf "Title")`).
 
 ## Working with Stacks
 

@@ -9,12 +9,12 @@ export interface Reference {
 	citekey: string | null;
 }
 
-/** Which frontmatter properties to read. */
+/** Which frontmatter properties to read. Each list is tried in order. */
 export interface ReferenceProps {
 	/** Properties that link to the document, e.g. ["pdf", "attachments"]. */
 	links: string[];
-	title: string;
-	citekey: string;
+	titles: string[];
+	citekeys: string[];
 }
 
 /**
@@ -29,10 +29,45 @@ export function linkTargets(value: unknown): string[] {
 	if (!v) return [];
 	const out: string[] = [];
 	for (const m of v.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) out.push(m[1].trim());
-	for (const m of v.matchAll(/\[[^\]]*\]\(<?([^)>]+?)>?\)/g)) out.push(decodeLink(m[1].replace(/#.*$/, "").trim()));
+	for (const dest of markdownLinkDestinations(v)) out.push(decodeLink(dest.replace(/#.*$/, "").trim()));
 	if (out.length) return out.filter(Boolean);
 	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return [];
 	return [v.replace(/#.*$/, "").trim()].filter(Boolean);
+}
+
+/**
+ * Destinations of Markdown links, following CommonMark: "<...>" may hold spaces and
+ * parentheses; otherwise parentheses must balance, and the destination ends at the first
+ * space, before an optional title ("[A](a.pdf "Title")").
+ */
+export function markdownLinkDestinations(s: string): string[] {
+	const out: string[] = [];
+	for (let i = s.indexOf("]("); i !== -1; i = s.indexOf("](", i + 2)) {
+		let j = i + 2;
+		while (s[j] === " ") j++;
+		if (s[j] === "<") {
+			const close = s.indexOf(">", j + 1);
+			if (close === -1) continue;
+			out.push(s.slice(j + 1, close));
+			continue;
+		}
+		let depth = 0;
+		let k = j;
+		for (; k < s.length; k++) {
+			const c = s[k];
+			if (c === "\\") {
+				k++;
+				continue;
+			}
+			if (c === "(") depth++;
+			else if (c === ")") {
+				if (depth === 0) break;
+				depth--;
+			} else if (c === " " && depth === 0) break;
+		}
+		if (k > j && k <= s.length) out.push(s.slice(j, k).replace(/\\([()])/g, "$1"));
+	}
+	return out;
 }
 
 function decodeLink(s: string): string {
@@ -51,17 +86,18 @@ function asText(v: unknown): string | null {
 
 /**
  * Property names to use. When Stacks is installed and `useStacks` is on, its own field
- * mapping wins, so a renamed "pdf" property is still found.
+ * mapping comes first, so a renamed "pdf" property is found; the plugin's own names stay
+ * as fallbacks, so notes written before a rename keep working.
  */
 export function referenceProps(app: App, own: ReferenceProps, useStacks: boolean): ReferenceProps {
 	if (!useStacks) return own;
 	const names = stacksPropertyNames(app);
 	if (!names) return own;
-	const links = [names.pdf, names.attachments].filter((n): n is string => typeof n === "string" && n.length > 0);
+	const merge = (first: unknown[], rest: string[]) => [...new Set([...first.filter((n): n is string => typeof n === "string" && n.length > 0), ...rest])];
 	return {
-		links: links.length ? links : own.links,
-		title: names.title || own.title,
-		citekey: names.citekey || own.citekey,
+		links: merge([names.pdf, names.attachments], own.links),
+		titles: merge([names.title], own.titles),
+		citekeys: merge([names.citekey], own.citekeys),
 	};
 }
 
@@ -108,6 +144,7 @@ export class ReferenceIndex {
 	}
 
 	private describe(note: TFile, fm: Record<string, unknown>): Reference {
-		return { path: note.path, title: asText(fm[this.props.title]) ?? note.basename, citekey: asText(fm[this.props.citekey]) };
+		const first = (props: string[]) => props.map((p) => asText(fm[p])).find((v) => v !== null) ?? null;
+		return { path: note.path, title: first(this.props.titles) ?? note.basename, citekey: first(this.props.citekeys) };
 	}
 }
