@@ -41,6 +41,15 @@ Turn on **Regular expressions** in settings to use ripgrep's regex syntax instea
 
 A word hyphenated at a line break is found too: search for `interview` and it matches "inter-" at the end of one line and "view" at the start of the next, whether the PDF uses a hyphen, a Unicode hyphen (‐) or an invisible soft hyphen. A hyphen you type (`well-known`) also matches one at a line break. En and em dashes at a line end are left alone, since they usually mark a range ("1990–1995") rather than a split word.
 
+## More file types
+
+Two settings add types rga can't read on its own. Each uses rga's custom adapters: the text goes into rga's cache like a PDF's, so there's still one place to search. Results for these types open in their default app, since Obsidian can't show them.
+
+- **PowerPoint and Excel** (`.pptx`, `.xlsx`): read with pandoc 3.8.3 or later (`brew install pandoc`).
+- **Keynote** (`.key`, macOS only): by default, the text comes from Spotlight (`mdimport`, built into macOS). It's fast, about a minute for 200 decks the first time, but results have no slide numbers. Turn on **Read Keynote decks with Keynote** to export each deck to PDF with Keynote itself instead: results show slide numbers, but Keynote opens while new decks are read (about 15–20 seconds each, one at a time), and macOS asks once to let Obsidian control Keynote. Each way has its own cache, so switching back and forth doesn't re-read decks already read.
+
+rga reads its configuration either from its own config file or from what RGA Search passes it, not both. So while either type is on, RGA Search passes rga a copy of your `config.jsonc` with its adapters added, and keeps any adapters of your own. The Keynote helper scripts live in the plugin's folder, under `adapters/`.
+
 ## Settings
 
 - **Folders**: where to search, for example `archive/zotero`. Empty searches the whole vault.
@@ -59,7 +68,7 @@ A word hyphenated at a line break is found too: search for `interview` and it ma
 ## Limits
 
 - **Scanned PDFs** with no text layer have nothing to search. Add a text layer first, for example with [OCRmyPDF](https://ocrmypdf.readthedocs.io).
-- **Pages** are known for PDFs only. EPUB and Office results open the file.
+- **Pages** are known for PDFs, and for Keynote decks read with Keynote. Other results open the file.
 - **Desktop only**: mobile apps can't run other programs.
 
 ## Building

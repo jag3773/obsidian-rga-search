@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type RgaSearchPlugin from "./main";
+import type { FileTypeOptions } from "./adapters";
 import { splitList } from "./rga";
 
 export interface RgaSearchSettings {
@@ -23,6 +24,12 @@ export interface RgaSearchSettings {
 	citekeyProperty: string;
 	/** Use Stacks' own property names when Stacks is installed. */
 	useStacks: boolean;
+	/** Search PowerPoint and Excel files, read with pandoc. */
+	officeFiles: boolean;
+	/** Search Keynote decks (macOS), read from Spotlight's text. */
+	keynoteFiles: boolean;
+	/** Read Keynote decks by exporting them to PDF with Keynote instead, for slide numbers. */
+	keynoteExport: boolean;
 }
 
 export const DEFAULT_SETTINGS: RgaSearchSettings = {
@@ -38,7 +45,16 @@ export const DEFAULT_SETTINGS: RgaSearchSettings = {
 	titleProperty: "title",
 	citekeyProperty: "citekey",
 	useStacks: true,
+	officeFiles: false,
+	keynoteFiles: false,
+	keynoteExport: false,
 };
+
+/** The extra file types the settings turn on. Keynote is macOS only. */
+export function fileTypes(s: RgaSearchSettings, platform: string): FileTypeOptions {
+	const keynote = s.keynoteFiles && platform === "darwin" ? (s.keynoteExport ? "export" : "spotlight") : "off";
+	return { office: s.officeFiles, keynote };
+}
 
 /** Saved data merged over the defaults, with each field checked. */
 export function loadSettings(saved: unknown): RgaSearchSettings {
@@ -61,6 +77,9 @@ export function loadSettings(saved: unknown): RgaSearchSettings {
 	s.titleProperty = str("titleProperty") ?? s.titleProperty;
 	s.citekeyProperty = str("citekeyProperty") ?? s.citekeyProperty;
 	s.useStacks = bool("useStacks") ?? s.useStacks;
+	s.officeFiles = bool("officeFiles") ?? s.officeFiles;
+	s.keynoteFiles = bool("keynoteFiles") ?? s.keynoteFiles;
+	s.keynoteExport = bool("keynoteExport") ?? s.keynoteExport;
 	return s;
 }
 
@@ -130,6 +149,41 @@ export class RgaSearchSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		new Setting(containerEl)
+			.setName("PowerPoint and Excel")
+			.setDesc("Also search .pptx and .xlsx files. They are read with pandoc 3.8.3 or later (`brew install pandoc`), and results open in their default app.")
+			.addToggle((t) =>
+				t.setValue(s.officeFiles).onChange((v) => {
+					s.officeFiles = v;
+					save();
+					void this.check(status);
+				}),
+			);
+
+		if (this.plugin.platform() === "darwin") {
+			new Setting(containerEl)
+				.setName("Keynote")
+				.setDesc("Also search Keynote decks. Their text comes from Spotlight, which is fast but has no slide numbers. Results open in Keynote.")
+				.addToggle((t) =>
+					t.setValue(s.keynoteFiles).onChange((v) => {
+						s.keynoteFiles = v;
+						save();
+						this.display();
+					}),
+				);
+			if (s.keynoteFiles)
+				new Setting(containerEl)
+					.setName("Read Keynote decks with Keynote")
+					.setDesc("Export each deck to PDF with Keynote instead, so results show slide numbers. Keynote opens while new decks are read, about 20 seconds each the first time; after that they come from the cache. macOS asks once to let Obsidian control Keynote.")
+					.addToggle((t) =>
+						t.setValue(s.keynoteExport).onChange((v) => {
+							s.keynoteExport = v;
+							save();
+							void this.check(status);
+						}),
+					);
+		}
+
 		this.number("Minimum query length", "Characters to type before searching.", () => s.minChars, (v) => (s.minChars = v));
 		this.number("Maximum results", "The search stops after this many matching lines.", () => s.maxResults, (v) => (s.maxResults = v));
 		this.number("Matches per file", "Most matching lines shown from one file.", () => s.maxPerFile, (v) => (s.maxPerFile = v));
@@ -173,6 +227,13 @@ export class RgaSearchSettingTab extends PluginSettingTab {
 		const v = await runner.version();
 		const parts = [v.text];
 		if (v.ok && !runner.hasProgram("pdftotext")) parts.push("pdftotext (poppler) was not found, so PDFs can't be read. Install poppler, for example with `brew install poppler`.");
+		const types = fileTypes(this.plugin.settings, this.plugin.platform());
+		if (v.ok && types.office) {
+			const formats = await runner.programOutput("pandoc", ["--list-input-formats"]);
+			if (formats === null) parts.push("pandoc was not found, so PowerPoint and Excel files can't be read. Install it, for example with `brew install pandoc`.");
+			else if (!/^pptx$/m.test(formats)) parts.push("This pandoc can't read PowerPoint or Excel files; version 3.8.3 or later can. Update it, for example with `brew upgrade pandoc`.");
+		}
+		if (v.ok && types.keynote === "export" && !(await runner.hasMacApp("com.apple.Keynote"))) parts.push("Keynote was not found, so decks can't be exported. Install Keynote, or turn off reading decks with Keynote.");
 		status.setDesc(parts.join(" "));
 	}
 

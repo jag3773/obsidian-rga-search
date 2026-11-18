@@ -56,6 +56,8 @@ export interface RunnerOptions {
 	rgaPath: string;
 	/** Working directory: the vault folder. */
 	cwd: string;
+	/** Extra environment for rga, such as RGA_CONFIG. */
+	env?: Record<string, string>;
 }
 
 export class NotFoundError extends Error {}
@@ -121,7 +123,7 @@ export class Runner {
 				finish((e as Error).message);
 				return;
 			}
-			const env = { ...this.env, PATH: this.pathVar(this.node.path.dirname(exe)) };
+			const env = { ...this.env, ...this.opts.env, PATH: this.pathVar(this.node.path.dirname(exe)) };
 			// Stopping rga must also stop the rg, rga-preproc and extractor processes it starts;
 			// otherwise they would run on after each keystroke. On macOS and Linux rga gets its own
 			// process group, and the group is signalled; on Windows taskkill ends the process tree.
@@ -223,6 +225,27 @@ export class Runner {
 		} catch (e) {
 			return { ok: false, text: (e as Error).message };
 		}
+	}
+
+	/** Whether macOS knows an app with this bundle identifier, by asking Spotlight. */
+	hasMacApp(bundleId: string): Promise<boolean> {
+		if (this.platform !== "darwin") return Promise.resolve(false);
+		return new Promise((resolve) => {
+			this.node.cp.execFile("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == "${bundleId.replace(/["\\]/g, "")}"`], { timeout: 10000 }, (err, stdout) => resolve(!err && String(stdout).trim().length > 0));
+		});
+	}
+
+	/** What a helper program prints, run on the PATH rga runs with; null if it couldn't run. */
+	programOutput(name: string, args: string[]): Promise<string | null> {
+		let rgaDir: string | undefined;
+		try {
+			rgaDir = this.node.path.dirname(this.resolve());
+		} catch {
+			rgaDir = undefined;
+		}
+		return new Promise((resolve) => {
+			this.node.cp.execFile(name, args, { env: { ...this.env, PATH: this.pathVar(rgaDir) }, timeout: 10000, windowsHide: true }, (err, stdout) => resolve(err ? null : String(stdout)));
+		});
 	}
 
 	/** Whether a helper program (pdftotext, pandoc) can be found on the PATH rga runs with. */

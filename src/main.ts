@@ -1,9 +1,10 @@
-import { FileSystemAdapter, MarkdownView, Notice, Plugin } from "obsidian";
+import { FileSystemAdapter, MarkdownView, Notice, PaneType, Plugin } from "obsidian";
+import { customAdapters, opensInObsidian, rgaConfig, SCRIPT_FILES, searchGlobs, userConfigPath } from "./adapters";
 import { SearchModal } from "./modal";
 import { ReferenceIndex, referenceProps } from "./references";
 import { warmArgs } from "./rga";
-import { desktopModules, RunHandle, Runner } from "./runner";
-import { loadSettings, RgaSearchSettings, RgaSearchSettingTab } from "./settings";
+import { desktopModules, NodeModules, RunHandle, Runner } from "./runner";
+import { fileTypes, loadSettings, RgaSearchSettings, RgaSearchSettingTab } from "./settings";
 
 const STARTUP_WARM_DELAY_MS = 30 * 1000;
 
@@ -42,11 +43,68 @@ export default class RgaSearchPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	platform(): string {
+		return desktopModules().process.platform;
+	}
+
+	/** The globs to search: the configured ones plus the extra file types turned on. */
+	globs(): string[] {
+		return searchGlobs(this.settings.globs, fileTypes(this.settings, this.platform()));
+	}
+
 	/** A runner for this vault, or null when the vault isn't a folder on disk. */
 	runner(): Runner | null {
 		const adapter = this.app.vault.adapter;
 		if (!(adapter instanceof FileSystemAdapter)) return null;
-		return new Runner(desktopModules(), { rgaPath: this.settings.rgaPath, cwd: adapter.getBasePath() });
+		const node = desktopModules();
+		const config = this.adapterConfig(node, adapter.getFullPath(this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`));
+		return new Runner(node, { rgaPath: this.settings.rgaPath, cwd: adapter.getBasePath(), env: config ? { RGA_CONFIG: config } : {} });
+	}
+
+	/**
+	 * rga's config with the plugin's adapters for the extra file types, or null when none is on.
+	 * Writes the helper scripts the adapters run into the plugin's folder, when they've changed.
+	 */
+	private adapterConfig(node: NodeModules, pluginDir: string): string | null {
+		const types = fileTypes(this.settings, node.process.platform);
+		const dir = node.path.join(pluginDir, "adapters");
+		const adapters = customAdapters(types, { keynoteSpotlight: node.path.join(dir, "keynote-spotlight.sh"), keynoteExport: node.path.join(dir, "keynote-export.sh") });
+		if (!adapters.length) return null;
+		if (types.keynote !== "off") {
+			try {
+				node.fs.mkdirSync(dir, { recursive: true });
+				for (const [name, text] of Object.entries(SCRIPT_FILES)) {
+					const file = node.path.join(dir, name);
+					if (!node.fs.existsSync(file) || node.fs.readFileSync(file, "utf8") !== text) node.fs.writeFileSync(file, text);
+				}
+			} catch (e) {
+				new Notice(`RGA Search couldn't write its Keynote scripts: ${(e as Error).message}`);
+			}
+		}
+		const file = userConfigPath(node.process.platform, node.os.homedir(), node.process.env);
+		let user: string | null = null;
+		try {
+			user = node.fs.readFileSync(file, "utf8");
+		} catch {
+			user = null;
+		}
+		return rgaConfig(user, adapters);
+	}
+
+	/** Opens a document link in Obsidian, or in its default app when Obsidian has no view for its type. */
+	private openDocument(link: string, newLeaf: PaneType | boolean): void {
+		const path = link.replace(/#.*$/, "");
+		// Obsidian doesn't publish which extensions it can show; core and plugin views register here.
+		const registry = (this.app as unknown as { viewRegistry?: { isExtensionRegistered?(ext: string): boolean } }).viewRegistry;
+		const adapter = this.app.vault.adapter;
+		if (!registry?.isExtensionRegistered || !(adapter instanceof FileSystemAdapter) || opensInObsidian(path, (ext) => registry.isExtensionRegistered?.(ext) ?? true)) {
+			void this.app.workspace.openLinkText(link, "", newLeaf);
+			return;
+		}
+		const electron = window.require("electron") as { shell: { openPath(path: string): Promise<string> } };
+		void electron.shell.openPath(adapter.getFullPath(path)).then((err: string) => {
+			if (err) new Notice(`RGA Search couldn't open ${path}: ${err}`);
+		});
 	}
 
 	openSearch(query = ""): void {
@@ -57,7 +115,7 @@ export default class RgaSearchPlugin extends Plugin {
 		}
 		const s = this.settings;
 		const refs = new ReferenceIndex(this.app, referenceProps(this.app, { links: s.linkProperties, titles: [s.titleProperty], citekeys: [s.citekeyProperty] }, s.useStacks)).build();
-		const modal = new SearchModal(this.app, runner, s, refs, query || this.selectedText());
+		const modal = new SearchModal(this.app, runner, s, refs, this.globs(), (link, newLeaf) => this.openDocument(link, newLeaf), query || this.selectedText());
 		modal.open();
 	}
 
@@ -78,7 +136,7 @@ export default class RgaSearchPlugin extends Plugin {
 			if (!quiet) new Notice("RGA Search needs the desktop app with the vault on a local disk.");
 			return;
 		}
-		const handle = runner.run(warmArgs(this.settings.folders, this.settings.globs));
+		const handle = runner.run(warmArgs(this.settings.folders, this.globs()));
 		this.warming = handle;
 		const notice = quiet ? null : new Notice("RGA Search: extracting document text. The first pass over a large library can take a while.", 0);
 		const started = Date.now();
