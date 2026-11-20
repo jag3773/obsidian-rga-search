@@ -1,4 +1,4 @@
-import { App, Keymap, Notice, Platform, SuggestModal } from "obsidian";
+import { App, Keymap, Notice, PaneType, Platform, SuggestModal } from "obsidian";
 import { documentLink, excerpt, groupByDocument, Hit, searchArgs } from "./rga";
 import type { ReferenceIndex } from "./references";
 import type { RunHandle, Runner } from "./runner";
@@ -20,6 +20,10 @@ export class SearchModal extends SuggestModal<Row> {
 		private runner: Runner,
 		private settings: RgaSearchSettings,
 		private refs: ReferenceIndex,
+		/** The globs to search: the settings' own plus the extra file types turned on. */
+		private globs: string[],
+		/** Opens a result, given its file and its link: in Obsidian, or in its default app for types Obsidian can't show. */
+		private openDocument: (path: string, link: string, newLeaf: PaneType | boolean) => void,
 		initialQuery = "",
 	) {
 		super(app);
@@ -63,7 +67,7 @@ export class SearchModal extends SuggestModal<Row> {
 
 		this.emptyStateText = "Searching…";
 		const handle = this.runner.run(
-			searchArgs({ query: q, regex: this.settings.regex, folders: this.settings.folders, globs: this.settings.globs, maxPerFile: this.settings.maxPerFile }),
+			searchArgs({ query: q, regex: this.settings.regex, folders: this.settings.folders, globs: this.globs, maxPerFile: this.settings.maxPerFile }),
 			this.settings.maxResults,
 		);
 		this.current = handle;
@@ -110,7 +114,7 @@ export class SearchModal extends SuggestModal<Row> {
 			void this.app.workspace.openLinkText(row.ref.path, "", Keymap.isModEvent(evt));
 			return;
 		}
-		void this.app.workspace.openLinkText(documentLink(row), "", Keymap.isModEvent(evt));
+		this.openDocument(row.path, documentLink(row), Keymap.isModEvent(evt));
 	}
 }
 

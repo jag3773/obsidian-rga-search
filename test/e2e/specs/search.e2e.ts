@@ -123,6 +123,48 @@ describe("RGA Search", function () {
 		expect((await openedLinks()).at(-1)).toBe("archive/Line Breaks.pdf#page=2");
 	});
 
+	it("searches PowerPoint files when turned on, and opens them in their default app", async function () {
+		const setOffice = (on: boolean) =>
+			browser.executeObsidian(({ app }, on) => {
+				(app as any).plugins.plugins["rga-search"].settings.officeFiles = on;
+			}, on);
+		// Record what would open outside Obsidian, rather than starting PowerPoint.
+		await browser.execute(() => {
+			const w = window as any;
+			if (w.__rgaExternal) return;
+			w.__rgaExternal = [];
+			const original = w.require;
+			w.require = (name: string) =>
+				name === "electron"
+					? {
+							shell: {
+								openPath: (p: string) => {
+									w.__rgaExternal.push(p);
+									return Promise.resolve("");
+								},
+							},
+						}
+					: original(name);
+		});
+		try {
+			await search("pomegranate");
+			await browser.waitUntil(async () => (await browser.$(".suggestion-empty").getText().catch(() => "")).startsWith("No matches."), { timeoutMsg: "PowerPoint files aren't searched by default" });
+			await browser.keys("Escape");
+			await setOffice(true);
+			await search("pomegranate");
+			await browser.waitUntil(async () => (await rows()).length === 1, { timeoutMsg: "the line from the deck" });
+			expect(await rows()).toEqual([{ title: "Harvest Deck #1.pptx", page: "", match: "pomegranate", citekey: "", path: "archive/Harvest Deck #1.pptx" }]);
+			const before = (await openedLinks()).length;
+			await browser.keys("Enter");
+			await browser.waitUntil(async () => ((await browser.execute(() => (window as any).__rgaExternal as string[])).length > 0), { timeoutMsg: "the deck opens in its default app" });
+			const external = await browser.execute(() => (window as any).__rgaExternal as string[]);
+			expect(external.at(-1)).toMatch(/[\\/]archive[\\/]Harvest Deck #1\.pptx$/);
+			expect((await openedLinks()).length).toBe(before);
+		} finally {
+			await setOffice(false);
+		}
+	});
+
 	it("says no matches with a count of unreadable files, and leaves notes to Obsidian's search", async function () {
 		await search("leaves notes");
 		// Report what the list last said, so a timeout explains itself.
