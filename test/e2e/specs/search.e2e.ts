@@ -153,12 +153,12 @@ describe("RGA Search", function () {
 			await setOffice(true);
 			await search("pomegranate");
 			await browser.waitUntil(async () => (await rows()).length === 1, { timeoutMsg: "the line from the deck" });
-			expect(await rows()).toEqual([{ title: "Harvest Deck.pptx", page: "", match: "pomegranate", citekey: "", path: "archive/Harvest Deck.pptx" }]);
+			expect(await rows()).toEqual([{ title: "Harvest Deck #1.pptx", page: "", match: "pomegranate", citekey: "", path: "archive/Harvest Deck #1.pptx" }]);
 			const before = (await openedLinks()).length;
 			await browser.keys("Enter");
 			await browser.waitUntil(async () => ((await browser.execute(() => (window as any).__rgaExternal as string[])).length > 0), { timeoutMsg: "the deck opens in its default app" });
 			const external = await browser.execute(() => (window as any).__rgaExternal as string[]);
-			expect(external.at(-1)).toMatch(/[\\/]archive[\\/]Harvest Deck\.pptx$/);
+			expect(external.at(-1)).toMatch(/[\\/]archive[\\/]Harvest Deck #1\.pptx$/);
 			expect((await openedLinks()).length).toBe(before);
 		} finally {
 			await setOffice(false);

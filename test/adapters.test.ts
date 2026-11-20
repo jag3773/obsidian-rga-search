@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { customAdapters, extraGlobs, KEYNOTE_SPOTLIGHT_JS, opensInObsidian, rgaConfig, searchGlobs, stripJsonc, userConfigPath } from "../src/adapters";
+import { activeUserConfig, customAdapters, extraGlobs, KEYNOTE_SPOTLIGHT_JS, opensInObsidian, openTarget, rgaConfig, searchGlobs, stripJsonc, userConfigPath } from "../src/adapters";
 import { searchArgs } from "../src/rga";
 import { NodeModules, Runner } from "../src/runner";
 
@@ -46,6 +46,26 @@ describe("extra file types", () => {
 		assert.deepEqual(JSON.parse(stripJsonc(text)), { $schema: "./config.v1.schema.json", url: "http://example.com/a//b", custom_adapters: [{ name: "mine", note: 'a " quote' }] });
 	});
 
+	it("leaves strings alone, even ones holding a comma before a bracket", () => {
+		const text = `{ "custom_adapters": [ { "name": "sed", "args": ["s/a,}/x/", "a,]b", "a , ] b", "// not a comment"], }, ], }`;
+		assert.deepEqual(JSON.parse(stripJsonc(text)), { custom_adapters: [{ name: "sed", args: ["s/a,}/x/", "a,]b", "a , ] b", "// not a comment"] }] });
+		// A trailing comma followed by a comment, then the bracket.
+		assert.deepEqual(JSON.parse(stripJsonc(`[1, 2, // two\n]`)), [1, 2]);
+	});
+
+	it("merges into the config rga would use: an inherited RGA_CONFIG before the config file", () => {
+		const inherited = JSON.stringify({ max_archive_recursion: 2, custom_adapters: [{ name: "mine" }] });
+		let read = 0;
+		const file = () => (read++, `{ "custom_adapters": [ { "name": "from_file" } ] }`);
+		assert.equal(activeUserConfig({ RGA_CONFIG: inherited }, file), inherited);
+		assert.equal(read, 0, "rga ignores the file when RGA_CONFIG is set");
+		assert.match(activeUserConfig({}, file) ?? "", /from_file/);
+		assert.match(activeUserConfig({ RGA_CONFIG: " " }, file) ?? "", /from_file/);
+		assert.equal(activeUserConfig({}, () => null), null);
+		const adapters = customAdapters({ office: true, keynote: "off" }, scripts);
+		assert.deepEqual(JSON.parse(rgaConfig(activeUserConfig({ RGA_CONFIG: inherited }, () => null), adapters) ?? ""), { max_archive_recursion: 2, custom_adapters: [{ name: "mine" }, ...adapters] });
+	});
+
 	it("keeps the user's own config and adapters alongside the plugin's", () => {
 		const adapters = customAdapters({ office: true, keynote: "off" }, scripts);
 		assert.equal(rgaConfig("{}", []), null, "nothing to add: rga reads the user's file itself");
@@ -67,6 +87,9 @@ describe("extra file types", () => {
 		assert.equal(opensInObsidian("a/b.PDF", registered), true);
 		assert.equal(opensInObsidian("a/Deck.key", registered), false);
 		assert.equal(opensInObsidian("a.b/noext", registered), false);
+		// The file's own path goes to the default app, "#" and all; Obsidian gets the link.
+		assert.deepEqual(openTarget("archive/Deck #1.pptx", "archive/Deck #1.pptx", registered), { app: "default", path: "archive/Deck #1.pptx" });
+		assert.deepEqual(openTarget("a/b.pdf", "a/b.pdf#page=3", registered), { app: "obsidian", link: "a/b.pdf#page=3" });
 	});
 });
 

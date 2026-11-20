@@ -88,17 +88,28 @@ export function customAdapters(o: FileTypeOptions, scripts: ScriptPaths): Custom
 	return adapters;
 }
 
-/** JSON with comments and trailing commas (rga's config.jsonc) as plain JSON. */
+/** JSON with comments and trailing commas (rga's config.jsonc) as plain JSON. Strings are left as they are. */
 export function stripJsonc(text: string): string {
+	// Each pass copies strings whole, so a "//", ",}" or ",]" inside one is never touched.
+	return dropTrailingCommas(dropComments(text));
+}
+
+/** The end of the string literal starting at text[i] (a quote): the index just past its closing quote. */
+function stringEnd(text: string, i: number): number {
+	let j = i + 1;
+	while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+	return j + 1;
+}
+
+function dropComments(text: string): string {
 	let out = "";
 	let i = 0;
 	while (i < text.length) {
 		const c = text[i];
 		if (c === '"') {
-			let j = i + 1;
-			while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
-			out += text.slice(i, j + 1);
-			i = j + 1;
+			const end = stringEnd(text, i);
+			out += text.slice(i, end);
+			i = end;
 		} else if (c === "/" && text[i + 1] === "/") {
 			while (i < text.length && text[i] !== "\n") i++;
 		} else if (c === "/" && text[i + 1] === "*") {
@@ -109,7 +120,42 @@ export function stripJsonc(text: string): string {
 			i++;
 		}
 	}
-	return out.replace(/,(\s*[}\]])/g, "$1");
+	return out;
+}
+
+function dropTrailingCommas(text: string): string {
+	let out = "";
+	let i = 0;
+	while (i < text.length) {
+		const c = text[i];
+		if (c === '"') {
+			const end = stringEnd(text, i);
+			out += text.slice(i, end);
+			i = end;
+			continue;
+		}
+		if (c === ",") {
+			let j = i + 1;
+			while (j < text.length && /\s/.test(text[j])) j++;
+			if (text[j] === "}" || text[j] === "]") {
+				i++;
+				continue;
+			}
+		}
+		out += c;
+		i++;
+	}
+	return out;
+}
+
+/**
+ * The text of the config rga would use on its own: RGA_CONFIG when Obsidian inherited one
+ * (rga then ignores its config file), else the config file, else null.
+ */
+export function activeUserConfig(env: Record<string, string | undefined>, readConfigFile: () => string | null): string | null {
+	const inherited = env.RGA_CONFIG;
+	if (inherited !== undefined && inherited.trim()) return inherited;
+	return readConfigFile();
 }
 
 /**
@@ -146,6 +192,14 @@ export function userConfigPath(platform: string, home: string, env: Record<strin
 export function opensInObsidian(path: string, registered: (ext: string) => boolean): boolean {
 	const ext = /\.([^./\\]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
 	return registered(ext);
+}
+
+/**
+ * How to open a result: its link in Obsidian (with a PDF's "#page=N"), or its file in the
+ * default app. The file is the hit's own path, which may contain "#" as an ordinary character.
+ */
+export function openTarget(path: string, link: string, registered: (ext: string) => boolean): { app: "obsidian"; link: string } | { app: "default"; path: string } {
+	return opensInObsidian(path, registered) ? { app: "obsidian", link } : { app: "default", path };
 }
 
 /*

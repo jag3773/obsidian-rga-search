@@ -1,5 +1,5 @@
 import { FileSystemAdapter, MarkdownView, Notice, PaneType, Plugin } from "obsidian";
-import { customAdapters, opensInObsidian, rgaConfig, SCRIPT_FILES, searchGlobs, userConfigPath } from "./adapters";
+import { activeUserConfig, customAdapters, openTarget, rgaConfig, SCRIPT_FILES, searchGlobs, userConfigPath } from "./adapters";
 import { SearchModal } from "./modal";
 import { ReferenceIndex, referenceProps } from "./references";
 import { warmArgs } from "./rga";
@@ -81,28 +81,31 @@ export default class RgaSearchPlugin extends Plugin {
 				new Notice(`RGA Search couldn't write its Keynote scripts: ${(e as Error).message}`);
 			}
 		}
-		const file = userConfigPath(node.process.platform, node.os.homedir(), node.process.env);
-		let user: string | null = null;
-		try {
-			user = node.fs.readFileSync(file, "utf8");
-		} catch {
-			user = null;
-		}
+		const user = activeUserConfig(node.process.env, () => {
+			try {
+				return node.fs.readFileSync(userConfigPath(node.process.platform, node.os.homedir(), node.process.env), "utf8");
+			} catch {
+				return null;
+			}
+		});
 		return rgaConfig(user, adapters);
 	}
 
-	/** Opens a document link in Obsidian, or in its default app when Obsidian has no view for its type. */
-	private openDocument(link: string, newLeaf: PaneType | boolean): void {
-		const path = link.replace(/#.*$/, "");
+	/**
+	 * Opens a result: its link in Obsidian, or the file at `path` (the hit's own path) in its
+	 * default app when Obsidian has no view for its type.
+	 */
+	private openDocument(path: string, link: string, newLeaf: PaneType | boolean): void {
 		// Obsidian doesn't publish which extensions it can show; core and plugin views register here.
 		const registry = (this.app as unknown as { viewRegistry?: { isExtensionRegistered?(ext: string): boolean } }).viewRegistry;
 		const adapter = this.app.vault.adapter;
-		if (!registry?.isExtensionRegistered || !(adapter instanceof FileSystemAdapter) || opensInObsidian(path, (ext) => registry.isExtensionRegistered?.(ext) ?? true)) {
+		const target = registry?.isExtensionRegistered && adapter instanceof FileSystemAdapter ? openTarget(path, link, (ext) => registry.isExtensionRegistered?.(ext) ?? true) : { app: "obsidian" as const, link };
+		if (target.app === "obsidian" || !(adapter instanceof FileSystemAdapter)) {
 			void this.app.workspace.openLinkText(link, "", newLeaf);
 			return;
 		}
 		const electron = window.require("electron") as { shell: { openPath(path: string): Promise<string> } };
-		void electron.shell.openPath(adapter.getFullPath(path)).then((err: string) => {
+		void electron.shell.openPath(adapter.getFullPath(target.path)).then((err: string) => {
 			if (err) new Notice(`RGA Search couldn't open ${path}: ${err}`);
 		});
 	}
@@ -115,7 +118,7 @@ export default class RgaSearchPlugin extends Plugin {
 		}
 		const s = this.settings;
 		const refs = new ReferenceIndex(this.app, referenceProps(this.app, { links: s.linkProperties, titles: [s.titleProperty], citekeys: [s.citekeyProperty] }, s.useStacks)).build();
-		const modal = new SearchModal(this.app, runner, s, refs, this.globs(), (link, newLeaf) => this.openDocument(link, newLeaf), query || this.selectedText());
+		const modal = new SearchModal(this.app, runner, s, refs, this.globs(), (path, link, newLeaf) => this.openDocument(path, link, newLeaf), query || this.selectedText());
 		modal.open();
 	}
 

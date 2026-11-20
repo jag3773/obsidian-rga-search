@@ -22,8 +22,8 @@ export class SearchModal extends SuggestModal<Row> {
 		private refs: ReferenceIndex,
 		/** The globs to search: the settings' own plus the extra file types turned on. */
 		private globs: string[],
-		/** Opens a document link: in Obsidian, or in its default app for types Obsidian can't show. */
-		private openDocument: (link: string, newLeaf: PaneType | boolean) => void,
+		/** Opens a result, given its file and its link: in Obsidian, or in its default app for types Obsidian can't show. */
+		private openDocument: (path: string, link: string, newLeaf: PaneType | boolean) => void,
 		initialQuery = "",
 	) {
 		super(app);
@@ -114,7 +114,7 @@ export class SearchModal extends SuggestModal<Row> {
 			void this.app.workspace.openLinkText(row.ref.path, "", Keymap.isModEvent(evt));
 			return;
 		}
-		this.openDocument(documentLink(row), Keymap.isModEvent(evt));
+		this.openDocument(row.path, documentLink(row), Keymap.isModEvent(evt));
 	}
 }
 
