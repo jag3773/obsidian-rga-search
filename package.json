@@ -1,7 +1,7 @@
 {
   "name": "obsidian-rga-search",
-  "version": "0.1.1",
-  "description": "Full-text search inside the PDFs, EPUBs and Office files in your vault, powered by ripgrep-all.",
+  "version": "0.2.0",
+  "description": "Full-text search inside the PDFs, EPUBs, Office files and Keynote decks in your vault, powered by ripgrep-all.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
