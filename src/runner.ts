@@ -151,9 +151,9 @@ export class Runner {
 			};
 			const take = (line: string) => {
 				if (truncated || cancelled) return;
-				const hit = parseLine(line);
-				if (!hit) return;
-				hits.push(hit);
+				const found = parseLine(line);
+				if (!found.length) return;
+				hits.push(...found.slice(0, maxResults - hits.length));
 				if (hits.length >= maxResults) {
 					truncated = true;
 					stop?.();
