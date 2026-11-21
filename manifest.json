@@ -1,7 +1,7 @@
 {
   "id": "rga-search",
   "name": "RGA Search",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.8.7",
   "description": "Full-text search inside the PDFs, EPUBs, Office files and Keynote decks in your vault, powered by ripgrep-all.",
   "author": "Jesse Griffin",
