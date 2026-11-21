@@ -69,7 +69,8 @@ export function customAdapters(o: FileTypeOptions, scripts: ScriptPaths): Custom
 	if (o.keynote === "spotlight")
 		adapters.push({
 			name: "rga_search_keynote_spotlight",
-			version: 1,
+			// 2: a deck Spotlight gave no text for is retried, not cached empty.
+			version: 2,
 			description: "Keynote decks, through Spotlight's text (added by RGA Search)",
 			extensions: ["key"],
 			binary: "/bin/sh",
@@ -208,13 +209,39 @@ export function openTarget(path: string, link: string, registered: (ext: string)
  * Both copy the deck from stdin to a temporary file, which also works for a deck inside a zip.
  */
 
-/** Spotlight's text for a deck, via `mdimport -t -d3`: fast, but without slide numbers. */
+/**
+ * Spotlight's text for a deck, via `mdimport -t -d3`: fast, but without slide numbers.
+ *
+ * Spotlight imports in a low-priority background service, and when the Mac is busy (rga
+ * extracting a library's PDFs at the same time, say) its Keynote importer returns a deck's other
+ * attributes without the text. An empty result would be cached for good, so a real deck that
+ * gives no text is tried three times, one deck at a time, and then reported as a failure: rga
+ * doesn't cache a failure, and the next search tries the deck again. A file that isn't a zip
+ * archive isn't a deck Keynote saved, and its empty text is cached like any other.
+ */
 export const KEYNOTE_SPOTLIGHT_SH = `# Written by RGA Search: prints the text Spotlight finds in a Keynote deck read from stdin.
 d=$(mktemp -d) || exit 1
-trap 'rm -rf "$d"' EXIT
+lock="\${TMPDIR:-/tmp}/rga-search-spotlight.lock"
+locked=
+cleanup() { rm -rf "$d"; if [ -n "$locked" ]; then rmdir "$lock" 2>/dev/null; fi; }
+trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 cat > "$d/deck.key" || exit 1
-/usr/bin/osascript -l JavaScript "$(dirname "$0")/keynote-spotlight.js" "$d/deck.key"
+/usr/bin/unzip -qq -l "$d/deck.key" >/dev/null 2>&1 || exit 0
+# A lock left by a run that was killed outright is cleared after 10 minutes.
+find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \\; 2>/dev/null
+until mkdir "$lock" 2>/dev/null; do sleep 0.2; done
+locked=1
+for pause in 0 2 5; do
+	sleep "$pause"
+	text=$(/usr/bin/osascript -l JavaScript "$(dirname "$0")/keynote-spotlight.js" "$d/deck.key") || continue
+	if [ -n "$text" ]; then
+		printf '%s\\n' "$text"
+		exit 0
+	fi
+done
+echo "Spotlight gave no text for this deck, perhaps because the Mac was busy. The next search tries it again." >&2
+exit 1
 `;
 
 /**

@@ -2,6 +2,15 @@
 
 Each release's notes on GitHub start with its section here.
 
+## 0.2.1
+
+### Keynote decks no longer go missing from results
+
+- When the Mac was busy (for example, while rga was reading PDFs at the same time), Spotlight could return a deck's details without its text. RGA Search cached that as an empty deck, so its text never turned up in results.
+- Now a deck that comes back with no text is tried up to three times. If it still has no text, nothing is cached and the next search reads it again.
+- Decks are read through Spotlight one at a time, so the first pass is slower: about 3 minutes for 200 decks. Later searches use the cache as before.
+- Every deck is read once more after updating, so decks cached empty before are fixed.
+
 ## 0.2.0
 
 ### Search PowerPoint, Excel and Keynote files

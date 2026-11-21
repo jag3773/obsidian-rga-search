@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { activeUserConfig, customAdapters, extraGlobs, KEYNOTE_SPOTLIGHT_JS, opensInObsidian, openTarget, rgaConfig, searchGlobs, stripJsonc, userConfigPath } from "../src/adapters";
+import { activeUserConfig, customAdapters, extraGlobs, KEYNOTE_SPOTLIGHT_JS, KEYNOTE_SPOTLIGHT_SH, opensInObsidian, openTarget, rgaConfig, searchGlobs, stripJsonc, userConfigPath } from "../src/adapters";
 import { searchArgs } from "../src/rga";
 import { NodeModules, Runner } from "../src/runner";
 
@@ -128,5 +128,33 @@ describe("Keynote text from Spotlight", { skip: process.platform !== "darwin" &&
 		fs.writeFileSync(path.join(dir, "spotlight.js"), KEYNOTE_SPOTLIGHT_JS);
 		const out = cp.execFileSync("/usr/bin/osascript", ["-l", "JavaScript", path.join(dir, "spotlight.js"), path.join(dir, "it's here.txt")], { encoding: "utf8" });
 		assert.equal(out.replace(/\n$/, ""), text);
+	});
+
+	/** Runs the deck script on `input` from stdin, with its own temporary folder (and so its own lock). */
+	const runScript = (input: Buffer) => {
+		const tmp = fs.mkdtempSync(path.join(dir, "tmp-"));
+		fs.writeFileSync(path.join(dir, "keynote-spotlight.sh"), KEYNOTE_SPOTLIGHT_SH);
+		fs.writeFileSync(path.join(dir, "keynote-spotlight.js"), KEYNOTE_SPOTLIGHT_JS);
+		const r = cp.spawnSync("/bin/sh", [path.join(dir, "keynote-spotlight.sh")], { input, encoding: "utf8", env: { ...process.env, TMPDIR: `${tmp}/` } });
+		return { ...r, lockLeft: fs.existsSync(path.join(tmp, "rga-search-spotlight.lock")) };
+	};
+
+	it("caches no text for a file that isn't a deck Keynote saved", () => {
+		const r = runScript(Buffer.alloc(64, 1));
+		assert.deepEqual([r.status, r.stdout], [0, ""]);
+	});
+
+	it("fails, so rga caches nothing and tries again, when a deck gives no text", () => {
+		// A zip named .key that Spotlight's Keynote importer finds no text in, as it does when
+		// the Mac is too busy for the importer to finish.
+		const src = path.join(dir, "zip-src");
+		fs.mkdirSync(path.join(src, "Index"), { recursive: true });
+		fs.writeFileSync(path.join(src, "Index", "Document.iwa"), Buffer.alloc(32, 7));
+		cp.execFileSync("/usr/bin/zip", ["-q", "-r", path.join(dir, "deck.zip"), "Index"], { cwd: src });
+		const r = runScript(fs.readFileSync(path.join(dir, "deck.zip")));
+		assert.equal(r.status, 1);
+		assert.equal(r.stdout, "");
+		assert.match(r.stderr, /Spotlight gave no text/);
+		assert.equal(r.lockLeft, false, "the lock is released");
 	});
 });
